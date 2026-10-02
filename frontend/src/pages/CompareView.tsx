@@ -14,12 +14,14 @@ import DownloadIcon from '@mui/icons-material/Download';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
+import { useCureStore } from '../stores/cureStore';
 import { useSpecimenSearch } from '../hooks/useSpecimenSearch';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { BeforeAfterSlider } from '../components/common/BeforeAfterSlider';
 import { db } from '../utils/db';
 import { makeSketchDataUrl, PHOTO_STAGE_LABEL, type PrepPhoto } from '../types/photo';
 import { hardnessLabel } from '../utils/unitConvert';
+import { effectiveMinOf, fmtMin, pauseCountOf, readingCountOf, fmtClock } from '../types/cure';
 
 /** /compare/:specimenId 前后对照滑块联看 + 导出对照说明文本 */
 export default function CompareView() {
@@ -36,6 +38,7 @@ export default function CompareView() {
   const [toast, setToast] = useState('');
 
   const specimen = specimens.find((it) => it.id === specimenId);
+  const cureWindows = useCureStore((s) => s.items);
 
   const loadPhotos = useCallback(async () => {
     if (!specimenId) return;
@@ -64,6 +67,18 @@ export default function CompareView() {
     [progress.list],
   );
 
+  // 固化养护汇总（与工序详情、材料台账同源：有效时长 + 暂停记录）
+  const cureSummary = useMemo(() => {
+    const wins = cureWindows.filter((w) => w.specimenId === specimenId);
+    const now = Date.now();
+    return {
+      min: Math.round(effectiveMinOf(wins, now)),
+      readings: readingCountOf(wins),
+      pauseCount: pauseCountOf(wins),
+      pauses: wins.flatMap((w) => w.pauses),
+    };
+  }, [cureWindows, specimenId]);
+
   const statement = useMemo(() => {
     if (!specimen) return '';
     const lines: string[] = [];
@@ -82,12 +97,22 @@ export default function CompareView() {
           : progress.list.map((n) => `#${n.seq}${n.stepType}(${n.nodeName}·${n.state === 'done' ? '已完成' : n.state === 'rolledback' ? '已回退' : '待办'})`).join(' → ')
       }`,
     );
+    lines.push(`固化有效时长：${fmtMin(cureSummary.min)}（读数 ${cureSummary.readings} 次，暂停 ${cureSummary.pauseCount} 次）`);
+    lines.push(
+      `暂停记录：${
+        cureSummary.pauses.length === 0
+          ? '无'
+          : cureSummary.pauses
+              .map((p) => `${fmtClock(p.pausedAt)} ${p.reason}${p.resumedAt ? ` → 恢复 ${fmtClock(p.resumedAt)}` : '（未恢复）'}`)
+              .join('；')
+      }`,
+    );
     lines.push(`修复前影像：${before ? `${PHOTO_STAGE_LABEL[before.stage]} · ${before.caption}` : '未选'}`);
     lines.push(`修复后影像：${after ? `${PHOTO_STAGE_LABEL[after.stage]} · ${after.caption}` : '未选'}`);
     lines.push(`对照标注：${markers.length === 0 ? '无' : markers.map((m) => `${m.id} ${m.text}`).join('；')}`);
     lines.push(`导出时间：${new Date().toLocaleString('zh-CN')}`);
     return lines.join('\n');
-  }, [specimen, progress, before, after, markers]);
+  }, [specimen, progress, before, after, markers, cureSummary]);
 
   const download = () => {
     const blob = new Blob([statement], { type: 'text/plain;charset=utf-8' });

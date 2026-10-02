@@ -32,6 +32,10 @@ export interface SupplyIssue {
   operator: string;
   specimenNo: string;
   issuedAt: number;
+  /** 关联工序（固化锁定批次时写入） */
+  procedureId?: string;
+  /** 关联养护窗口（回退时据此释放批次） */
+  cureWindowId?: string;
 }
 
 export type SupplyLotDraft = Omit<SupplyLot, 'id' | 'issues'>;

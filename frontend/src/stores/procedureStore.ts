@@ -2,12 +2,14 @@ import { create } from 'zustand';
 import { db } from '../utils/db';
 import { newId } from '../utils/id';
 import type { PrepProcedure, PrepProcedureDraft } from '../types/procedure';
+import { useCureStore } from './cureStore';
 
 interface ProcedureState {
   items: PrepProcedure[];
   loaded: boolean;
   load: () => Promise<void>;
   add: (draft: PrepProcedureDraft) => Promise<PrepProcedure>;
+  update: (id: string, patch: Partial<PrepProcedure>) => Promise<void>;
   finish: (id: string) => Promise<void>;
   rollback: (id: string, reason?: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -28,6 +30,10 @@ export const useProcedureStore = create<ProcedureState>((set, get) => ({
     set({ items: [...get().items, record] });
     return record;
   },
+  async update(id, patch) {
+    await db.procedures.update(id, patch);
+    set({ items: get().items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
+  },
   async finish(id) {
     const patch: Partial<PrepProcedure> = { state: 'done', finishedAt: Date.now() };
     await db.procedures.update(id, patch);
@@ -36,10 +42,13 @@ export const useProcedureStore = create<ProcedureState>((set, get) => ({
   async rollback(id) {
     const patch: Partial<PrepProcedure> = { state: 'rolledback', finishedAt: undefined };
     await db.procedures.update(id, patch);
+    // 回退释放对应胶种批次：关闭未结束窗口并回补领用
+    await useCureStore.getState().releaseByProcedure(id);
     set({ items: get().items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
   },
   async remove(id) {
     await db.procedures.delete(id);
+    await useCureStore.getState().removeByProcedure(id);
     set({ items: get().items.filter((it) => it.id !== id) });
   },
   bySpecimen(specimenId) {

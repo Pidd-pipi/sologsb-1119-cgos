@@ -9,6 +9,8 @@ interface SupplyState {
   load: () => Promise<void>;
   add: (draft: SupplyLotDraft) => Promise<SupplyLot>;
   issue: (id: string, payload: Omit<SupplyIssue, 'id' | 'issuedAt'>) => Promise<void>;
+  /** 回退养护窗口：按 cureWindowId 找到领用记录，回补数量并删除记录 */
+  releaseIssueByWindow: (cureWindowId: string) => Promise<void>;
   trace: (lotNo: string) => SupplyLot[];
 }
 
@@ -37,6 +39,19 @@ export const useSupplyStore = create<SupplyState>((set, get) => ({
     };
     await db.supplies.put(next);
     set({ items: get().items.map((it) => (it.id === id ? next : it)) });
+  },
+  async releaseIssueByWindow(cureWindowId) {
+    const target = get().items.find((it) => it.issues.some((i) => i.cureWindowId === cureWindowId));
+    if (!target) return;
+    const issue = target.issues.find((i) => i.cureWindowId === cureWindowId);
+    if (!issue) return;
+    const next: SupplyLot = {
+      ...target,
+      qty: target.qty + issue.qty,
+      issues: target.issues.filter((i) => i.cureWindowId !== cureWindowId),
+    };
+    await db.supplies.put(next);
+    set({ items: get().items.map((it) => (it.id === target.id ? next : it)) });
   },
   trace(lotNo) {
     if (!lotNo) return get().items;

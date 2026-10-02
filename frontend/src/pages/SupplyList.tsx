@@ -21,8 +21,10 @@ import TableCell from '@mui/material/TableCell';
 import AddIcon from '@mui/icons-material/Add';
 import { useSupplyStore } from '../stores/supplyStore';
 import { useSpecimenStore } from '../stores/specimenStore';
+import { useCureStore } from '../stores/cureStore';
 import { MeasureField } from '../components/common/MeasureField';
 import { SUPPLY_KINDS, isLowStock, shelfLifeLeftDays, type SupplyKind, type SupplyLot, type SupplyLotDraft } from '../types/supply';
+import { effectiveMinOf, fmtMin, pauseCountOf, readingCountOf } from '../types/cure';
 
 const EMPTY_DRAFT: SupplyLotDraft = {
   name: '',
@@ -42,6 +44,7 @@ export default function SupplyList() {
   const addLot = useSupplyStore((s) => s.add);
   const issue = useSupplyStore((s) => s.issue);
   const specimens = useSpecimenStore((s) => s.items);
+  const cureWindows = useCureStore((s) => s.items);
 
   const [trace, setTrace] = useState('');
   const [kindFilter, setKindFilter] = useState<SupplyKind | 'all'>('all');
@@ -104,6 +107,19 @@ export default function SupplyList() {
   };
 
   const lowCount = lots.filter(isLowStock).length;
+
+  // 胶种批次关联的养护窗口：有效累计时长 / 读数 / 暂停（与工序详情、对照说明同源）
+  const cureSummary = (lotId: string) => {
+    const linked = cureWindows.filter((w) => w.supplyLotId === lotId);
+    if (linked.length === 0) return null;
+    const now = Date.now();
+    return {
+      min: Math.round(effectiveMinOf(linked, now)),
+      pauses: pauseCountOf(linked),
+      readings: readingCountOf(linked),
+      windows: linked.length,
+    };
+  };
 
   return (
     <Stack spacing={2}>
@@ -171,6 +187,7 @@ export default function SupplyList() {
                   <TableCell align="right">低量阈值</TableCell>
                   <TableCell align="right">剩余保质期</TableCell>
                   <TableCell>最近领用</TableCell>
+                  <TableCell>固化养护</TableCell>
                   <TableCell align="right">操作</TableCell>
                 </TableRow>
               </TableHead>
@@ -202,6 +219,20 @@ export default function SupplyList() {
                         {lot.issues.length === 0
                           ? '—'
                           : `${lot.issues[0].operator} 领 ${lot.issues[0].qty} ${lot.unit}（${lot.issues[0].specimenNo}）`}
+                      </TableCell>
+                      <TableCell>
+                        {lot.kind === '胶种' && cureSummary(lot.id) ? (
+                          <Stack spacing={0.25}>
+                            <Typography variant="body2" fontWeight={600}>
+                              有效 {fmtMin(cureSummary(lot.id)!.min)}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {cureSummary(lot.id)!.windows} 窗 · 读数 {cureSummary(lot.id)!.readings} · 暂停 {cureSummary(lot.id)!.pauses}
+                            </Typography>
+                          </Stack>
+                        ) : (
+                          '—'
+                        )}
                       </TableCell>
                       <TableCell align="right">
                         <Button

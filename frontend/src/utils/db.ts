@@ -3,11 +3,12 @@ import type { Specimen } from '../types/specimen';
 import type { PrepProcedure } from '../types/procedure';
 import type { SupplyLot } from '../types/supply';
 import type { PrepPhoto } from '../types/photo';
+import type { CureWindow } from '../types/cure';
 import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -16,6 +17,7 @@ class FossilPrepDB extends Dexie {
   procedures!: Table<PrepProcedure, string>;
   supplies!: Table<SupplyLot, string>;
   photos!: Table<PrepPhoto, string>;
+  cureWindows!: Table<CureWindow, string>;
 
   constructor() {
     super(DB_NAME);
@@ -52,6 +54,27 @@ class FossilPrepDB extends Dexie {
           .modify((row: any) => {
             if (!row.issues) row.issues = [];
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
+          });
+      });
+    // v3：新增连续环境窗口表；用胶工序旧数据无读数，标记需人工确认
+    this.version(3)
+      .stores({
+        specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+        procedures: 'id, specimenId, seq, stepType, state, startedAt, needsCureConfirm',
+        supplies: 'id, kind, lotNo, name, openedAt',
+        photos: 'id, specimenId, procedureId, stage, capturedAt',
+        cureWindows: 'id, procedureId, specimenId, supplyLotId, status, startedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('procedures')
+          .toCollection()
+          .modify((row: any) => {
+            const usesAdhesive =
+              ['加固', '粘接', '补配'].includes(row.stepType) && !!row.adhesive;
+            if (usesAdhesive && row.needsCureConfirm === undefined) {
+              row.needsCureConfirm = true;
+            }
           });
       });
   }
@@ -204,8 +227,7 @@ export async function ensureSeedData(): Promise<void> {
           issuedAt: now - 6 * day,
         },
       ],
-    },
-    {
+    },    {
       id: newId('sup'),
       name: '碳化硅磨料',
       kind: '磨料',
@@ -246,10 +268,40 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  await db.transaction('rw', db.specimens, db.procedures, db.supplies, db.photos, async () => {
+  // 示范连续环境窗口：加固节点锁定 Paraloid B-72 批次，已多次读数、含一次超标暂停
+  const cureWindows: CureWindow[] = [
+    {
+      id: newId('cur'),
+      procedureId: procedures[1].id,
+      specimenId,
+      supplyLotId: supplies[0].id,
+      adhesive: 'Paraloid B-72',
+      range: { tempMin: 20, tempMax: 25, rhMin: 40, rhMax: 55 },
+      requiredMin: 90,
+      startedAt: now - 5 * 3600000,
+      status: 'running',
+      readings: [
+        { at: now - 5 * 3600000, tempC: 23, rh: 46, valid: true },
+        { at: now - 4 * 3600000, tempC: 23.5, rh: 45, valid: true },
+        { at: now - 3 * 3600000, tempC: 28, rh: 60, valid: false, note: '超标' },
+        { at: now - 2 * 3600000, tempC: 23, rh: 45, valid: true },
+        { at: now - 1 * 3600000, tempC: 22.5, rh: 44, valid: true },
+      ],
+      pauses: [
+        { id: newId('pau'), pausedAt: now - 3 * 3600000, reason: '超标', resumedAt: now - 2.5 * 3600000 },
+      ],
+      effectiveMin: 270,
+      usedQty: 1,
+      createdAt: now - 5 * 3600000,
+      updatedAt: now - 1 * 3600000,
+    },
+  ];
+
+  await db.transaction('rw', db.specimens, db.procedures, db.supplies, db.photos, db.cureWindows, async () => {
     await db.specimens.bulkPut(specimens);
     await db.procedures.bulkPut(procedures);
     await db.supplies.bulkPut(supplies);
     await db.photos.bulkPut(photos);
+    await db.cureWindows.bulkPut(cureWindows);
   });
 }

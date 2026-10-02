@@ -57,10 +57,11 @@ sologsb-1119/
     └── src/
         ├── main.tsx
         ├── router/index.tsx
-        ├── types/{specimen,procedure,supply,photo}.ts
-        ├── stores/{specimen,procedure,supply}Store.ts
+        ├── types/{specimen,procedure,supply,photo,cure}.ts
+        ├── stores/{specimen,procedure,supply,cure}Store.ts
         ├── components/common/{ProcedureTimeline,BeforeAfterSlider,SpecimenCard,MeasureField}.tsx
-        ├── hooks/{useSpecimenSearch,usePrepProgress}.ts
+        ├── components/cure/CurePanel.tsx
+        ├── hooks/{useSpecimenSearch,usePrepProgress,useProcedureCure}.ts
         ├── pages/{SpecimenList,SpecimenDetail,ProcedureForm,SupplyList,CompareView}.tsx
         └── utils/{db,unitConvert,id}.ts
 ```
@@ -79,11 +80,12 @@ sologsb-1119/
 
 ## 数据存储说明
 
-- 数据库名 `gbfossilprep`，当前结构版本 **v2**（`localStorage['gbfossilprep:db-version']` 记录）。
-- 四张表：`specimens`（标本）、`procedures`（修复工序）、`supplies`（工具材料批次 + 领用记录）、`photos`（修复影像 dataUrl 独立表）。
+- 数据库名 `gbfossilprep`，当前结构版本 **v3**（`localStorage['gbfossilprep:db-version']` 记录）。
+- 五张表：`specimens`（标本）、`procedures`（修复工序）、`supplies`（工具材料批次 + 领用记录）、`photos`（修复影像 dataUrl 独立表）、`cureWindows`（连续环境窗口）。
 - v1 → v2 迁移：为老数据补齐 `state`、`tools`、`photoBeforeIds/AfterIds`、`issues`、`lowThreshold` 字段并新增索引。
+- v2 → v3 迁移：新增 `cureWindows` 表；用胶工序（加固/粘接/补配）旧数据无连续读数，置 `needsCureConfirm` 标记，需人工确认固化时长与暂停记录。
 - 容器无状态、不挂载命名卷；换浏览器或清空站点数据即回到初始示范数据。
-- 首次打开会灌入 2 件示范标本、2 个工序节点、4 个材料批次与 2 张留痕影像，便于直接查看。
+- 首次打开会灌入 2 件示范标本、2 个工序节点、4 个材料批次、2 张留痕影像与 1 个连续环境窗口（含多次读数与一次超标暂停），便于直接查看。
 
 ## 功能要点
 
@@ -92,3 +94,4 @@ sologsb-1119/
 - **低量高亮**：在库 ≤ 低量阈值的批次整行高亮并标注「低量」，剩余保质期为负时红色标注。
 - **批号追溯**：按批号片段检索，行内直接展示该批次的领用明细。
 - **前后对照**：滑块拖动联看修复前后影像，支持缩放与标注泡点，可导出/复制对照说明文本。
+- **连续环境窗口验收**：用胶工序开始时锁定胶种批次与温湿度范围，之后多次读数；停机/超标时段暂停不计，恢复后续计，只有有效累计时长达标才能结束窗口并完成节点。多窗口重叠时段取并集不重复计算；关页重开保留已有时段；工序回退释放锁定批次。工序详情、材料台账与前后对照说明显示同一时长与暂停记录；旧数据升级后无读数工序人工确认。

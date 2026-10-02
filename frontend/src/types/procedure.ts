@@ -72,6 +72,8 @@ export interface PrepProcedure {
   startedAt: number;
   state: ProcedureState;
   finishedAt?: number;
+  /** 旧数据升级后无连续读数，需人工确认固化时长 */
+  needsCureConfirm?: boolean;
 }
 
 export type PrepProcedureDraft = Omit<PrepProcedure, 'id'>;

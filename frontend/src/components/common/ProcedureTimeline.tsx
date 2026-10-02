@@ -14,6 +14,8 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import UndoIcon from '@mui/icons-material/Undo';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { PrepProcedure } from '../../types/procedure';
+import { useCureStore } from '../../stores/cureStore';
+import { CurePanel, procedureUsesAdhesive } from '../cure/CurePanel';
 
 export interface ProcedureTimelineProps {
   items: PrepProcedure[];
@@ -35,6 +37,7 @@ function fmtTime(ts?: number): string {
  */
 export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: ProcedureTimelineProps) {
   const [expanded, setExpanded] = useState<string | null>(items[0]?.id ?? null);
+  const cureWindows = useCureStore((s) => s.items);
 
   if (items.length === 0) {
     return (
@@ -51,6 +54,10 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
       {items.map((node, index) => {
         const isDone = node.state === 'done';
         const open = expanded === node.id;
+        // 用胶工序：必须有已关闭的养护窗口（有效累计时长达标）才能完成节点
+        const cureDone =
+          !procedureUsesAdhesive(node) ||
+          cureWindows.some((w) => w.procedureId === node.id && w.status === 'closed');
         return (
           <Box key={node.id} sx={{ display: 'flex', gap: 1.5 }}>
             <Stack alignItems="center" sx={{ pt: 0.5 }}>
@@ -79,9 +86,19 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                 </Typography>
                 <Box sx={{ flex: 1 }} />
                 {!isDone && onFinish ? (
-                  <Button size="small" variant="contained" onClick={() => onFinish(node.id)}>
-                    完成节点
-                  </Button>
+                  <Tooltip
+                    title={
+                      cureDone
+                        ? ''
+                        : '养护窗口未完成：有效累计时长达标并「结束窗口」后才能完成节点'
+                    }
+                  >
+                    <span>
+                      <Button size="small" variant="contained" disabled={!cureDone} onClick={() => onFinish(node.id)}>
+                        完成节点
+                      </Button>
+                    </span>
+                  </Tooltip>
                 ) : null}
                 {isDone && onRollback ? (
                   <Button size="small" color="warning" startIcon={<UndoIcon />} onClick={() => onRollback(node.id)}>
@@ -120,6 +137,12 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     </Button>
                   ) : null}
                 </Stack>
+                {procedureUsesAdhesive(node) ? (
+                  <>
+                    <Divider sx={{ my: 1 }} />
+                    <CurePanel procedure={node} />
+                  </>
+                ) : null}
               </Collapse>
             </Paper>
           </Box>
