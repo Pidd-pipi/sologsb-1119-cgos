@@ -21,6 +21,9 @@ import TableCell from '@mui/material/TableCell';
 import AddIcon from '@mui/icons-material/Add';
 import { useSupplyStore } from '../stores/supplyStore';
 import { useSpecimenStore } from '../stores/specimenStore';
+import { useEnvWindowStore } from '../stores/envWindowStore';
+import { useProcedureStore } from '../stores/procedureStore';
+import { envStats, formatMin } from '../types/envWindow';
 import { MeasureField } from '../components/common/MeasureField';
 import { SUPPLY_KINDS, isLowStock, shelfLifeLeftDays, type SupplyKind, type SupplyLot, type SupplyLotDraft } from '../types/supply';
 
@@ -42,6 +45,19 @@ export default function SupplyList() {
   const addLot = useSupplyStore((s) => s.add);
   const issue = useSupplyStore((s) => s.issue);
   const specimens = useSpecimenStore((s) => s.items);
+  const envWindows = useEnvWindowStore((s) => s.items);
+  const procedures = useProcedureStore((s) => s.items);
+
+  /** 胶种批次的固化窗口（含进行中/已结束/已释放，时长口径与工序详情一致） */
+  const windowsByLot = useMemo(() => {
+    const map = new Map<string, typeof envWindows>();
+    for (const w of envWindows) {
+      const arr = map.get(w.adhesiveLotId) ?? [];
+      arr.push(w);
+      map.set(w.adhesiveLotId, arr);
+    }
+    return map;
+  }, [envWindows]);
 
   const [trace, setTrace] = useState('');
   const [kindFilter, setKindFilter] = useState<SupplyKind | 'all'>('all');
@@ -171,6 +187,7 @@ export default function SupplyList() {
                   <TableCell align="right">低量阈值</TableCell>
                   <TableCell align="right">剩余保质期</TableCell>
                   <TableCell>最近领用</TableCell>
+                  <TableCell>固化窗口</TableCell>
                   <TableCell align="right">操作</TableCell>
                 </TableRow>
               </TableHead>
@@ -178,6 +195,8 @@ export default function SupplyList() {
                 {group.rows.map((lot) => {
                   const low = isLowStock(lot);
                   const left = shelfLifeLeftDays(lot);
+                  const lotWins = windowsByLot.get(lot.id) ?? [];
+                  const activeWins = lotWins.filter((w) => w.status === 'active');
                   return (
                     <TableRow
                       key={lot.id}
@@ -203,6 +222,38 @@ export default function SupplyList() {
                           ? '—'
                           : `${lot.issues[0].operator} 领 ${lot.issues[0].qty} ${lot.unit}（${lot.issues[0].specimenNo}）`}
                       </TableCell>
+                      <TableCell data-testid={`lot-windows-${lot.lotNo}`}>
+                        {lotWins.length === 0 ? (
+                          '—'
+                        ) : (
+                          <Stack spacing={0.5}>
+                            {activeWins.length > 0 ? (
+                              <Chip
+                                size="small"
+                                color="primary"
+                                label={`锁定中 ${activeWins.length} 个窗口`}
+                              />
+                            ) : (
+                              <Chip size="small" variant="outlined" label="无进行中窗口（已释放）" />
+                            )}
+                            {lotWins.map((w) => {
+                              const s = envStats(w);
+                              const proc = procedures.find((p) => p.id === w.procedureId);
+                              return (
+                                <Typography key={w.id} variant="caption" display="block" color="text.secondary">
+                                  {proc ? `#${proc.seq} ${proc.nodeName}` : '已删工序'} ·{' '}
+                                  {w.status === 'active'
+                                    ? `有效 ${formatMin(s.validMin)}/${formatMin(w.requiredMin)}`
+                                    : w.status === 'finished'
+                                      ? `已达标 ${formatMin(s.validMin)}`
+                                      : `已释放 · 有效 ${formatMin(s.validMin)}`}
+                                  {s.segments.length > 0 ? ` · 暂停/超标 ${s.segments.length} 段` : ''}
+                                </Typography>
+                              );
+                            })}
+                          </Stack>
+                        )}
+                      </TableCell>
                       <TableCell align="right">
                         <Button
                           size="small"
@@ -222,7 +273,7 @@ export default function SupplyList() {
               </TableBody>
             </Table>
           )}
-          {group.rows.some((r) => r.issues.length > 1) ? (
+          {group.rows.some((r) => r.issues.length > 1 || (windowsByLot.get(r.id) ?? []).length > 0) ? (
             <Stack spacing={0.5} sx={{ mt: 1 }}>
               {group.rows
                 .filter((r) => r.issues.length > 1)
@@ -232,6 +283,31 @@ export default function SupplyList() {
                     {r.issues.map((i) => `${i.operator} ${i.qty}${r.unit}→${i.specimenNo}`).join('；')}
                   </Typography>
                 ))}
+              {group.rows
+                .filter((r) => (windowsByLot.get(r.id) ?? []).length > 0)
+                .flatMap((r) =>
+                  (windowsByLot.get(r.id) ?? []).map((w) => {
+                    const s = envStats(w);
+                    const proc = procedures.find((p) => p.id === w.procedureId);
+                    return (
+                      <Box key={w.id} sx={{ pl: 1 }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                          批号 {r.lotNo} 固化窗口
+                          {proc ? `（#${proc.seq} ${proc.nodeName}）` : ''}
+                          ：有效累计 {formatMin(s.validMin)} / 要求 {formatMin(w.requiredMin)}
+                          {w.status === 'released' ? ' · 批次已随回退释放' : w.status === 'finished' ? ' · 窗口已结束' : ' · 监测中'}
+                          {s.segments.length === 0 ? ' · 无暂停/超标记录' : ''}
+                        </Typography>
+                        {s.segments.map((seg, i) => (
+                          <Typography key={i} variant="caption" color="text.secondary" sx={{ display: 'block', pl: 2 }}>
+                            {seg.kind === 'manual' ? '［停机］' : '［超标］'}
+                            {seg.reason} · {formatMin(Math.round((seg.to - seg.from) / 60000))}
+                          </Typography>
+                        ))}
+                      </Box>
+                    );
+                  }),
+                )}
             </Stack>
           ) : null}
         </Paper>

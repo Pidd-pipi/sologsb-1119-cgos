@@ -9,17 +9,24 @@ import Collapse from '@mui/material/Collapse';
 import Divider from '@mui/material/Divider';
 import Paper from '@mui/material/Paper';
 import Tooltip from '@mui/material/Tooltip';
+import Alert from '@mui/material/Alert';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import UndoIcon from '@mui/icons-material/Undo';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { PrepProcedure } from '../../types/procedure';
+import { useEnvWindowStore } from '../../stores/envWindowStore';
+import { envStats, formatMin, procedureNeedsEnv } from '../../types/envWindow';
+import { canFinishProcedure } from '../../stores/procedureStore';
+import { EnvWindowPanel } from './EnvWindowPanel';
 
 export interface ProcedureTimelineProps {
   items: PrepProcedure[];
   onFinish?: (id: string) => void;
   onRollback?: (id: string) => void;
   onOpenPhoto?: (procedureId: string) => void;
+  onConfirmLegacy?: (id: string) => void;
+  onToast?: (msg: string) => void;
 }
 
 function fmtTime(ts?: number): string {
@@ -30,11 +37,12 @@ function fmtTime(ts?: number): string {
 }
 
 /**
- * 纵向工序节点流：步骤图标、状态、耗时、环境参数折叠区。
- * 被标本详情页、工序录入页消费。
+ * 纵向工序节点流：步骤图标、状态、连续环境窗口（多次读数/有效累计/暂停记录）。
+ * 被标本详情页、工序录入页消费。三处视图共用同一 envStats，时长口径一致。
  */
-export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: ProcedureTimelineProps) {
+export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto, onConfirmLegacy, onToast }: ProcedureTimelineProps) {
   const [expanded, setExpanded] = useState<string | null>(items[0]?.id ?? null);
+  const windows = useEnvWindowStore((s) => s.items);
 
   if (items.length === 0) {
     return (
@@ -51,6 +59,12 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
       {items.map((node, index) => {
         const isDone = node.state === 'done';
         const open = expanded === node.id;
+        const win = windows.find((w) => w.procedureId === node.id);
+        const stats = win ? envStats(win) : undefined;
+        const needsEnv = procedureNeedsEnv(node);
+        const legacyPending = needsEnv && !win && !node.envLegacyConfirmed;
+        const finishCheck = node.state === 'pending' ? canFinishProcedure(node) : { ok: true as const };
+        const headDuration = win ? formatMin(stats!.validMin) : `${node.durationMin} min`;
         return (
           <Box key={node.id} sx={{ display: 'flex', gap: 1.5 }}>
             <Stack alignItems="center" sx={{ pt: 0.5 }}>
@@ -75,10 +89,33 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                   color={isDone ? 'success' : node.state === 'rolledback' ? 'error' : 'default'}
                 />
                 <Typography variant="caption" color="text.secondary">
-                  耗时 {node.durationMin} min · 责任人 {node.operator}
+                  {win ? '有效累计 ' : '耗时 '}
+                  {headDuration}
+                  {win ? ` / 要求 ${formatMin(win.requiredMin)}` : ''} · 责任人 {node.operator}
                 </Typography>
+                {win ? (
+                  <Chip
+                    size="small"
+                    color={win.status === 'finished' ? 'success' : win.status === 'released' ? 'default' : 'primary'}
+                    variant="outlined"
+                    label={
+                      win.status === 'finished'
+                        ? '窗口已结束'
+                        : win.status === 'released'
+                          ? '窗口已释放'
+                          : stats?.met
+                            ? '有效时长已达标'
+                            : '固化监测中'
+                    }
+                  />
+                ) : null}
                 <Box sx={{ flex: 1 }} />
-                {!isDone && onFinish ? (
+                {!isDone && onFinish && !win && finishCheck.ok ? (
+                  <Button size="small" variant="contained" onClick={() => onFinish(node.id)}>
+                    完成节点
+                  </Button>
+                ) : null}
+                {!isDone && onFinish && win && win.status !== 'active' ? (
                   <Button size="small" variant="contained" onClick={() => onFinish(node.id)}>
                     完成节点
                   </Button>
@@ -97,6 +134,11 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                   </IconButton>
                 </Tooltip>
               </Stack>
+              {node.state === 'pending' && !finishCheck.ok && finishCheck.reason ? (
+                <Alert severity="warning" sx={{ mt: 1, py: 0 }}>
+                  {finishCheck.reason}
+                </Alert>
+              ) : null}
               <Collapse in={open} unmountOnExit>
                 <Divider sx={{ my: 1 }} />
                 <Stack direction="row" spacing={2} flexWrap="wrap" rowGap={0.5}>
@@ -106,9 +148,11 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     胶种：{node.adhesive || '—'}
                     {node.adhesiveConc > 0 ? `（浓度 ${node.adhesiveConc} %）` : ''}
                   </Typography>
-                  <Typography variant="body2">
-                    环境：{node.tempC} ℃ / RH {node.rh} %
-                  </Typography>
+                  {!win ? (
+                    <Typography variant="body2">
+                      环境：{node.tempC} ℃ / RH {node.rh} %
+                    </Typography>
+                  ) : null}
                   <Typography variant="body2">开始：{fmtTime(node.startedAt)}</Typography>
                   <Typography variant="body2">结束：{fmtTime(node.finishedAt)}</Typography>
                   <Typography variant="body2">
@@ -120,6 +164,36 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     </Button>
                   ) : null}
                 </Stack>
+
+                {win ? (
+                  <EnvWindowPanel
+                    window={win}
+                    onToast={(m) => onToast?.(m)}
+                    onWindowFinished={() => onFinish?.(node.id)}
+                  />
+                ) : null}
+
+                {legacyPending ? (
+                  <Alert
+                    severity="info"
+                    sx={{ mt: 1 }}
+                    action={
+                      onConfirmLegacy ? (
+                        <Button
+                          color="inherit"
+                          size="small"
+                          onClick={() => onConfirmLegacy(node.id)}
+                          data-testid={`legacy-confirm-${node.id}`}
+                        >
+                          人工确认
+                        </Button>
+                      ) : undefined
+                    }
+                  >
+                    该工序为旧数据升级而来，无连续环境窗口读数。
+                    {node.state === 'done' ? '完成状态保留，确认后归档按单次温湿度记录处理。' : '请人工核实固化条件后确认，方可完成节点。'}
+                  </Alert>
+                ) : null}
               </Collapse>
             </Paper>
           </Box>

@@ -72,6 +72,17 @@ export interface PrepProcedure {
   startedAt: number;
   state: ProcedureState;
   finishedAt?: number;
+  /** 锁定的胶种批次（supplies 表 id），开始窗口时锁定 */
+  adhesiveLotId?: string;
+  /** 锁定的合格温湿度范围 */
+  tempMinC?: number;
+  tempMaxC?: number;
+  rhMin?: number;
+  rhMax?: number;
+  /** 关联环境窗口（envWindows 表 id） */
+  envWindowId?: string;
+  /** 老数据（v3 升级前）无读数工序，需人工确认 */
+  envLegacyConfirmed?: boolean;
 }
 
 export type PrepProcedureDraft = Omit<PrepProcedure, 'id'>;

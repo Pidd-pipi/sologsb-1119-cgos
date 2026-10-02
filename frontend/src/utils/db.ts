@@ -3,11 +3,12 @@ import type { Specimen } from '../types/specimen';
 import type { PrepProcedure } from '../types/procedure';
 import type { SupplyLot } from '../types/supply';
 import type { PrepPhoto } from '../types/photo';
+import type { EnvWindow } from '../types/envWindow';
 import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -16,6 +17,7 @@ class FossilPrepDB extends Dexie {
   procedures!: Table<PrepProcedure, string>;
   supplies!: Table<SupplyLot, string>;
   photos!: Table<PrepPhoto, string>;
+  envWindows!: Table<EnvWindow, string>;
 
   constructor() {
     super(DB_NAME);
@@ -54,6 +56,26 @@ class FossilPrepDB extends Dexie {
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
           });
       });
+    // v3：连续环境窗口验收——新表 + 工序锁定胶种批次/范围；旧工序无读数，留待人工确认
+    this.version(3)
+      .stores({
+        specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+        procedures: 'id, specimenId, seq, stepType, state, startedAt, adhesiveLotId, envWindowId',
+        supplies: 'id, kind, lotNo, name, openedAt',
+        photos: 'id, specimenId, procedureId, stage, capturedAt',
+        envWindows: 'id, procedureId, specimenId, adhesiveLotId, status, startedAt',
+      })
+      .upgrade(async (tx) => {
+        // 旧数据：envLegacyConfirmed 保持缺省（undefined），
+        // 界面据此把「使用胶种但无读数」的旧工序标为待人工确认。
+        await tx
+          .table('procedures')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.adhesiveLotId === undefined) row.adhesiveLotId = '';
+            if (row.envWindowId === undefined) row.envWindowId = '';
+          });
+      });
   }
 }
 
@@ -84,6 +106,7 @@ export async function ensureSeedData(): Promise<void> {
 
   const now = Date.now();
   const day = 24 * 3600 * 1000;
+  const min = 60 * 1000;
   const specimenId = newId('spm');
   const specimenId2 = newId('spm');
 
@@ -118,6 +141,13 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
+  // 加固工序 + 进行中的连续环境窗口（示范：超标恢复后续算、人工停机）
+  const cureStartedAt = now - 2 * 60 * min;
+  const cureWindowId = newId('env');
+  const b72LotId = newId('sup');
+  const cureProcedureId = newId('prc');
+  const cureRange = { tempMinC: 18, tempMaxC: 26, rhMin: 40, rhMax: 60 };
+
   const procedures: PrepProcedure[] = [
     {
       id: newId('prc'),
@@ -138,9 +168,12 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 10 * day,
       state: 'done',
       finishedAt: now - 10 * day + 145 * 60000,
+      adhesiveLotId: '',
+      envWindowId: '',
+      envLegacyConfirmed: true,
     },
     {
-      id: newId('prc'),
+      id: cureProcedureId,
       specimenId,
       stepType: '加固',
       nodeName: '围岩裂隙渗透加固',
@@ -155,10 +188,49 @@ export async function ensureSeedData(): Promise<void> {
       photoBeforeIds: [],
       photoAfterIds: [],
       operator: '林砚秋',
-      startedAt: now - 6 * day,
+      startedAt: cureStartedAt,
       state: 'pending',
+      adhesiveLotId: b72LotId,
+      envWindowId: cureWindowId,
+      envLegacyConfirmed: true,
+      ...cureRange,
     },
   ];
+
+  // 读数轨迹：合格 30min → 超标 20min（自动扣减）→ 恢复合格 25min → 人工停机 15min → 续测合格中
+  const cureWindow: EnvWindow = {
+    id: cureWindowId,
+    procedureId: cureProcedureId,
+    specimenId,
+    adhesive: 'Paraloid B-72',
+    adhesiveLotId: b72LotId,
+    adhesiveLotNo: 'B72-20240312',
+    requiredMin: 90,
+    startedAt: cureStartedAt,
+    status: 'active',
+    readings: [
+      { id: newId('rdg'), at: cureStartedAt, tempC: 22.5, rh: 48, inRange: true, note: '开始固化' },
+      { id: newId('rdg'), at: cureStartedAt + 30 * min, tempC: 23.0, rh: 50, inRange: true },
+      { id: newId('rdg'), at: cureStartedAt + 40 * min, tempC: 28.5, rh: 64, inRange: false, note: '恒温箱波动' },
+      { id: newId('rdg'), at: cureStartedAt + 60 * min, tempC: 27.0, rh: 62, inRange: false },
+      { id: newId('rdg'), at: cureStartedAt + 75 * min, tempC: 23.5, rh: 51, inRange: true, note: '恢复，继续累计' },
+      { id: newId('rdg'), at: cureStartedAt + 100 * min, tempC: 22.0, rh: 47, inRange: true },
+      { id: newId('rdg'), at: cureStartedAt + 120 * min, tempC: 21.5, rh: 46, inRange: true, note: '停机前最后读数' },
+      { id: newId('rdg'), at: cureStartedAt + 135 * min, tempC: 22.5, rh: 48, inRange: true, note: '复位后续测' },
+    ],
+    pauses: [
+      {
+        id: newId('pau'),
+        from: cureStartedAt + 120 * min,
+        to: cureStartedAt + 135 * min,
+        reason: '设备停机检修',
+        kind: 'manual',
+      },
+    ],
+    // 最后读数停在 135 min（模拟关页时刻）：有效 85/90 min，差 5 min 达标
+    observedUntil: cureStartedAt + 135 * min,
+    ...cureRange,
+  };
 
   const photos: PrepPhoto[] = [
     {
@@ -185,7 +257,7 @@ export async function ensureSeedData(): Promise<void> {
 
   const supplies: SupplyLot[] = [
     {
-      id: newId('sup'),
+      id: b72LotId,
       name: 'Paraloid B-72',
       kind: '胶种',
       spec: '分析纯 500 g',
@@ -246,10 +318,11 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  await db.transaction('rw', db.specimens, db.procedures, db.supplies, db.photos, async () => {
+  await db.transaction('rw', db.specimens, db.procedures, db.supplies, db.photos, db.envWindows, async () => {
     await db.specimens.bulkPut(specimens);
     await db.procedures.bulkPut(procedures);
     await db.supplies.bulkPut(supplies);
     await db.photos.bulkPut(photos);
+    await db.envWindows.put(cureWindow);
   });
 }

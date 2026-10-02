@@ -30,6 +30,7 @@ export default function SpecimenDetail() {
   const setStatus = useSpecimenStore((s) => s.setStatus);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
+  const confirmLegacy = useProcedureStore((s) => s.confirmLegacy);
   const progress = usePrepProgress(id);
   const [photos, setPhotos] = useState<PrepPhoto[]>([]);
   const [toast, setToast] = useState('');
@@ -140,8 +141,13 @@ export default function SpecimenDetail() {
               }}
               onRollback={async (pid) => {
                 await rollback(pid);
-                setToast('节点已回退');
+                setToast('节点已回退，胶种批次锁定已释放');
               }}
+              onConfirmLegacy={async (pid) => {
+                await confirmLegacy(pid);
+                setToast('旧工序已人工确认');
+              }}
+              onToast={setToast}
             />
           </Paper>
 

@@ -13,6 +13,7 @@ import Chip from '@mui/material/Chip';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
 import { useSupplyStore } from '../stores/supplyStore';
+import { useEnvWindowStore } from '../stores/envWindowStore';
 import { ensureSeedData, markDbVersion, readDbVersion } from '../utils/db';
 import SpecimenList from '../pages/SpecimenList';
 import SpecimenDetail from '../pages/SpecimenDetail';
@@ -80,19 +81,20 @@ export default function AppRouter() {
   const loadSpecimens = useSpecimenStore((s) => s.load);
   const loadProcedures = useProcedureStore((s) => s.load);
   const loadSupplies = useSupplyStore((s) => s.load);
+  const loadEnvWindows = useEnvWindowStore((s) => s.load);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       await ensureSeedData();
       await markDbVersion();
-      await Promise.all([loadSpecimens(), loadProcedures(), loadSupplies()]);
+      await Promise.all([loadSpecimens(), loadProcedures(), loadSupplies(), loadEnvWindows()]);
       if (alive) setReady(true);
     })();
     return () => {
       alive = false;
     };
-  }, [loadSpecimens, loadProcedures, loadSupplies]);
+  }, [loadSpecimens, loadProcedures, loadSupplies, loadEnvWindows]);
 
   if (!ready) {
     return (

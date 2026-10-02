@@ -14,11 +14,13 @@ import DownloadIcon from '@mui/icons-material/Download';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
+import { useEnvWindowStore } from '../stores/envWindowStore';
 import { useSpecimenSearch } from '../hooks/useSpecimenSearch';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { BeforeAfterSlider } from '../components/common/BeforeAfterSlider';
 import { db } from '../utils/db';
 import { makeSketchDataUrl, PHOTO_STAGE_LABEL, type PrepPhoto } from '../types/photo';
+import { envStats, formatMin, procedureNeedsEnv } from '../types/envWindow';
 import { hardnessLabel } from '../utils/unitConvert';
 
 /** /compare/:specimenId 前后对照滑块联看 + 导出对照说明文本 */
@@ -28,7 +30,11 @@ export default function CompareView() {
   const specimens = useSpecimenStore((s) => s.items);
   const { result } = useSpecimenSearch();
   const procedures = useProcedureStore((s) => s.items);
+  const envWindows = useEnvWindowStore((s) => s.items);
   const progress = usePrepProgress(specimenId || undefined);
+
+  /** 取工序对应窗口统计（与工序详情、材料台账同一口径） */
+  const winOf = (procedureId: string) => envWindows.find((w) => w.procedureId === procedureId);
 
   const [photos, setPhotos] = useState<PrepPhoto[]>([]);
   const [beforeId, setBeforeId] = useState('');
@@ -82,12 +88,37 @@ export default function CompareView() {
           : progress.list.map((n) => `#${n.seq}${n.stepType}(${n.nodeName}·${n.state === 'done' ? '已完成' : n.state === 'rolledback' ? '已回退' : '待办'})`).join(' → ')
       }`,
     );
+    // 连续环境窗口：同一时长与暂停记录在工序详情、材料台账、对照说明三处一致
+    if (progress.list.some((n) => procedureNeedsEnv(n))) {
+      for (const n of progress.list.filter((p) => procedureNeedsEnv(p))) {
+        const w = winOf(n.id);
+        if (!w) {
+          lines.push(
+            `#${n.seq} ${n.stepType}：${n.envLegacyConfirmed ? '旧数据单次温湿度记录，已人工确认' : '旧数据无连续读数，待人工确认'}（${n.tempC} ℃ / RH ${n.rh}%）`,
+          );
+          continue;
+        }
+        const s = envStats(w);
+        lines.push(
+          `#${n.seq} ${n.stepType}环境窗口：胶种 ${w.adhesive} 批次 ${w.adhesiveLotNo} · 有效累计 ${formatMin(s.validMin)}/${formatMin(
+            w.requiredMin,
+          )}（${s.met ? '已达标' : '未达标'}）· 暂停/超标 ${s.segments.length} 段共 ${formatMin(Math.round(s.pausedMs / 60000))}${
+            w.status === 'released' ? ' · 窗口已随回退释放批次' : w.status === 'finished' ? ' · 窗口已结束' : ' · 监测中'
+          }`,
+        );
+        for (const seg of s.segments) {
+          lines.push(
+            `    - ${seg.kind === 'manual' ? '停机' : '超标'}：${seg.reason} · ${formatMin(Math.round((seg.to - seg.from) / 60000))}`,
+          );
+        }
+      }
+    }
     lines.push(`修复前影像：${before ? `${PHOTO_STAGE_LABEL[before.stage]} · ${before.caption}` : '未选'}`);
     lines.push(`修复后影像：${after ? `${PHOTO_STAGE_LABEL[after.stage]} · ${after.caption}` : '未选'}`);
     lines.push(`对照标注：${markers.length === 0 ? '无' : markers.map((m) => `${m.id} ${m.text}`).join('；')}`);
     lines.push(`导出时间：${new Date().toLocaleString('zh-CN')}`);
     return lines.join('\n');
-  }, [specimen, progress, before, after, markers]);
+  }, [specimen, progress, before, after, markers, envWindows]);
 
   const download = () => {
     const blob = new Blob([statement], { type: 'text/plain;charset=utf-8' });
@@ -216,18 +247,49 @@ export default function CompareView() {
               </Typography>
             ) : (
               <Stack spacing={0.5}>
-                {progress.list.map((n) => (
-                  <Stack key={n.id} direction="row" spacing={1} alignItems="center">
-                    <Typography variant="body2">
-                      #{n.seq} {n.stepType} · {n.nodeName}
-                    </Typography>
-                    <Chip
-                      size="small"
-                      label={n.state === 'done' ? '已完成' : n.state === 'rolledback' ? '已回退' : '待办'}
-                      color={n.state === 'done' ? 'success' : n.state === 'rolledback' ? 'error' : 'default'}
-                    />
-                  </Stack>
-                ))}
+                {progress.list.map((n) => {
+                  const w = winOf(n.id);
+                  const s = w ? envStats(w) : undefined;
+                  return (
+                    <Box key={n.id}>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Typography variant="body2">
+                          #{n.seq} {n.stepType} · {n.nodeName}
+                        </Typography>
+                        <Chip
+                          size="small"
+                          label={n.state === 'done' ? '已完成' : n.state === 'rolledback' ? '已回退' : '待办'}
+                          color={n.state === 'done' ? 'success' : n.state === 'rolledback' ? 'error' : 'default'}
+                        />
+                        {w && s ? (
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color={s.met ? 'success' : w.status === 'released' ? 'default' : 'primary'}
+                            label={`有效 ${formatMin(s.validMin)}/${formatMin(w.requiredMin)}`}
+                          />
+                        ) : procedureNeedsEnv(n) ? (
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color={n.envLegacyConfirmed ? 'default' : 'warning'}
+                            label={n.envLegacyConfirmed ? '旧记录已确认' : '旧数据待确认'}
+                          />
+                        ) : null}
+                      </Stack>
+                      {w && s && s.segments.length > 0 ? (
+                        <Stack sx={{ pl: 2, mt: 0.25 }} spacing={0.25}>
+                          {s.segments.map((seg, i) => (
+                            <Typography key={i} variant="caption" color="text.secondary">
+                              {seg.kind === 'manual' ? '停机' : '超标'} · {seg.reason} ·{' '}
+                              {formatMin(Math.round((seg.to - seg.from) / 60000))}
+                            </Typography>
+                          ))}
+                        </Stack>
+                      ) : null}
+                    </Box>
+                  );
+                })}
               </Stack>
             )}
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
